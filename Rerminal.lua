@@ -779,7 +779,7 @@ Rerminal.Connections["KeybindListener"] = UserInputService.InputBegan:Connect(fu
 end)
 
 -- ----------------------------------------------------------------------------
--- PLUGIN LIFECYCLE & DEPENDENCY RESOLUTION
+-- PLUGIN LIFECYCLE & DEPENDENCY RESOLUTION (FIXED)
 -- ----------------------------------------------------------------------------
 
 function Rerminal.GetPluginDependencies(pluginName)
@@ -802,7 +802,7 @@ function Rerminal.GetPluginDependencies(pluginName)
     if depBlock then
         local deps = {}
         for dep in depBlock:gmatch('["\']([^"\']+)["\']') do
-            table.insert(deps, dep:gsub("%.lua$", "")[1])
+            table.insert(deps, (dep:gsub("%.lua$", "")))
         end
         return deps
     end
@@ -812,45 +812,22 @@ function Rerminal.GetPluginDependencies(pluginName)
     if commentDeps then
         local deps = {}
         for dep in commentDeps:gmatch("[%w_%-]+") do
-            table.insert(deps, dep:gsub("%.lua$", ""))
+            local clean = (dep:gsub("%.lua$", ""))
+            if clean:lower() ~= "dependencies" and clean:lower() ~= "dependency" then
+                table.insert(deps, clean)
+            end
         end
         return deps
     end
 
-    -- 3. Dry-run sandboxed attempt
-    local fn = loadstring(content, "=" .. cleanName)
-    if fn then
-        local dryPlugin = { Name = cleanName, Dependencies = {} }
-        local dryEnv = setmetatable({}, {
-            __index = function(_, k)
-                if Env[k] ~= nil then return Env[k] end
-                return function() end
-            end
-        })
-        setfenv(fn, dryEnv)
-        local ok, res = pcall(fn, dryEnv, dryPlugin)
-        if ok and type(res) == "function" then
-            ok, res = pcall(res, dryEnv, dryPlugin)
-        end
-        if ok then
-            local raw = (type(res) == "table" and (res.Dependencies or res.dependencies))
-                or dryPlugin.Dependencies or dryPlugin.dependencies
-            if type(raw) == "table" then
-                local deps = {}
-                for _, d in ipairs(raw) do
-                    table.insert(deps, tostring(d):gsub("%.lua$", ""))
-                end
-                return deps
-            end
-        end
-    end
-
+    -- Static analysis only: do not execute plugin code in a dry-run
     return {}
 end
 
 function Rerminal.ResolvePluginOrder(pluginList)
     local toLoad = {}
     local queue = {}
+    local cachedDeps = {}
 
     for _, name in ipairs(pluginList) do
         local clean = name:gsub("%.lua$", "")
@@ -864,6 +841,7 @@ function Rerminal.ResolvePluginOrder(pluginList)
     while #queue > 0 do
         local curr = table.remove(queue, 1)
         local deps = Rerminal.GetPluginDependencies(curr)
+        cachedDeps[curr] = deps
         for _, dep in ipairs(deps) do
             local cleanDep = dep:gsub("%.lua$", "")
             if not Rerminal.LoadedPlugins[cleanDep] and not toLoad[cleanDep] then
@@ -882,7 +860,7 @@ function Rerminal.ResolvePluginOrder(pluginList)
     end
 
     for u in pairs(toLoad) do
-        local deps = Rerminal.GetPluginDependencies(u)
+        local deps = cachedDeps[u] or Rerminal.GetPluginDependencies(u)
         for _, dep in ipairs(deps) do
             local cleanDep = dep:gsub("%.lua$", "")
             if toLoad[cleanDep] then
@@ -904,7 +882,7 @@ function Rerminal.ResolvePluginOrder(pluginList)
     local totalNodes = 0
     for _ in pairs(toLoad) do totalNodes = totalNodes + 1 end
 
-    -- Kahn's Algorithm with randomized tie-breaking (random if no dependency)
+    -- Kahn's Algorithm with randomized tie-breaking
     while #available > 0 do
         local randIdx = math.random(1, #available)
         local u = table.remove(available, randIdx)
@@ -990,10 +968,10 @@ function Rerminal.LoadPlugin(pluginName, skipAutoload)
 
     local rawDeps = (type(result) == "table" and (result.Dependencies or result.dependencies))
         or pluginObj.Dependencies or pluginObj.dependencies
-    if type(rawDeps) == "table" then
+    if type(rawDeps) == "table" and #rawDeps > 0 then
         pluginObj.Dependencies = {}
         for _, d in ipairs(rawDeps) do
-            table.insert(pluginObj.Dependencies, tostring(d):gsub("%.lua$", "")[1])
+            table.insert(pluginObj.Dependencies, (tostring(d):gsub("%.lua$", "")))
         end
     else
         pluginObj.Dependencies = Rerminal.GetPluginDependencies(cleanName)
